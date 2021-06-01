@@ -1,8 +1,134 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: A simple EC2 instance
+Description: Template for aws application
 Resources:
-  MyEC2Instance:
-    Type: AWS::EC2::Instance
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
     Properties:
-      ImageId: ami-0ff8a91507f77f867
-      InstanceType: t1.micro
+      ApiKeySourceType: HEADER
+      Description: An API Gateway that triggers First layer Lambda Function
+      EndpointConfiguration:
+        Types:
+          - EDGE
+      Name: myelsk-first-layer-lambda-api
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: 'lambda'
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        ConnectionType: INTERNET
+        Credentials: !GetAtt ApiGatewayIamRole.Arn
+        IntegrationHttpMethod: POST
+        PassthroughBehavior: WHEN_NO_MATCH
+        TimeoutInMillis: 29000
+        Type: AWS_PROXY
+        Uri: !Sub 'arn:aws:apigateway:eu-central-1:lambda:path/2015-03-31/functions/${FirstLayerLambdaFunction.Arn}/invocations'
+      OperationName: 'lambda'
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: 'application/json'
+      RestApiId: !Ref ApiGatewayRestApi
+      Schema: { }
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      Description: Lambda API Deployment
+      RestApiId: !Ref ApiGatewayRestApi
+
+  ApiGatewayDevEnv:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: dev
+      Description: development environtment
+      RestApiId: !Ref ApiGatewayRestApi
+      DeploymentId: !Ref ApiGatewayDeployment
+      MethodSettings:
+        - ResourcePath: /
+          HttpMethod: POST
+          MetricsEnabled: 'true'
+          DataTraceEnabled: 'false'
+          ThrottlingBurstLimit: '999'
+
+  ApiGatewayIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'apigateway.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action: 'lambda:*'
+                Resource: !GetAtt FirstLayerLambdaFunction.Arn
+
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: myelsk-sqs
+
+  SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - "https://sqs.eu-central-1.amazonaws.com/254685023080/myelsk-sqs"
+      PolicyDocument:
+        Statement:
+          - Action:
+              - "SQS:*"
+              - "sqs:*"
+            Effect: "Allow"
+            Resource: "arn:aws:sqs:eu-central-1:254685023080:myelsk-sqs"
+            Principal:
+              AWS:
+                - "254685023080"
+
+  FirstLayerLambdaFunction:
+    Type: AWS::Lambda::Function
+    DeletionPolicy: Delete
+    Properties:
+      Role: arn:aws:iam::254685023080:role/lambda-execution-role
+      Handler: first_layer_handler.handler
+      Code:
+        S3Bucket: myelsk-lambdas-bucket
+        S3Key: first_layer_handler.zip
+      Runtime: python3.7
+
+  FirstLayerLambdaFunctionIamRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: 'Allow'
+              Principal:
+                Service:
+                  - 'lambda.amazonaws.com'
+              Action:
+                - 'sts:AssumeRole'
+        Path: '/'
